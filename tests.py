@@ -207,8 +207,6 @@ def test_cache_change_server_content_no_refresh():
         assert response.headers["X-Cache-Status"] == "HIT"
         assert response.text == "Hello from upstream server"
 
-        nginx.container.exec_run("nginx -s quit")
-
         nginx.change_server_response()
 
         response = nginx.get()
