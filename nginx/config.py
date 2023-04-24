@@ -1,4 +1,4 @@
-VALID_TIMEOUT = 10
+VALID_TIMEOUT = 5
 
 DEFAULT = f"""
 events {{
@@ -25,7 +25,7 @@ http {{
             add_header X-Upstream-Response 1;   
         }}
         location /error_4xx {{
-            return 418 'I’m a teapot';
+            return 418 'Im a teapot';
             add_header Content-Type text/plain;
             add_header X-Upstream-Response 1;   
         }}
