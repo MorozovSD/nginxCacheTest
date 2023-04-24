@@ -1,73 +1,33 @@
-from contextlib import contextmanager
-
-import requests
-import docker
 import time
-import os
 
-from nginx_conf import VALID_TIMEOUT, DEFAULT, BYPASS
-
-PARAMETER = {'p': 'parameter'}
-DIFFERENT_PARAMETER = {'p': 'Other parameter'}
-DELTA = 1
-
-
-def send_request_to_nginx(parameters=None, headers=None):
-    parameters = parameters or PARAMETER
-    headers = headers or None
-    return requests.Session().get(f"http://localhost:8080/", params=parameters, headers=headers)
-
-
-@contextmanager
-def create_nginx_container(conf=DEFAULT):
-    docker_client = docker.from_env()
-
-    uniq_srt = f'{int(time.time())}'
-    with open(f"nginx_{uniq_srt}.conf", "w") as f:
-        f.write(conf)
-
-    container = docker_client.containers.run(
-        "nginx:latest",
-        command=["nginx", "-g", "daemon off;"],
-        ports={"8080/tcp": 8080},
-        volumes={
-            f"{os.getcwd()}/tmp/nginx_cache_{uniq_srt}/": {"bind": "/tmp/nginx_cache", "mode": "rw"},
-            f"{os.getcwd()}/nginx_{uniq_srt}.conf": {"bind": "/etc/nginx/nginx.conf", "mode": "rw"},
-        },
-        remove=True,
-        detach=True,
-    )
-    time.sleep(1)  # Waiting container started
-    try:
-        yield container
-    finally:
-        container.remove(force=True)
+from nginx import config
+from nginx.nginx import Nginx, DIFFERENT_PARAMETER, DELTA
 
 
 def test_cache_similar():
-    with create_nginx_container():
-        response = send_request_to_nginx()
+    with Nginx() as nginx:
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "MISS"
 
-        response = send_request_to_nginx()
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "HIT"
 
 
 def test_cache_different():
-    with create_nginx_container():
-        response = send_request_to_nginx()
+    with Nginx() as nginx:
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "MISS"
 
-        response = send_request_to_nginx(parameters=DIFFERENT_PARAMETER)
+        response = nginx.send(parameters=DIFFERENT_PARAMETER)
         assert response.headers["X-Cache-Status"] == "MISS"
 
 
 def test_cache_similar_speed():
-    with create_nginx_container():
-        response_miss = send_request_to_nginx()
+    with Nginx() as nginx:
+        response_miss = nginx.send()
         assert response_miss.headers["X-Cache-Status"] == "MISS"
 
-        response_hit = send_request_to_nginx()
+        response_hit = nginx.send()
         assert response_hit.headers["X-Cache-Status"] == "HIT"
 
         response_miss_time = response_miss.elapsed.total_seconds()
@@ -76,61 +36,125 @@ def test_cache_similar_speed():
 
 
 def test_cache_similar_clean_timeout():
-    with create_nginx_container():
-        response = send_request_to_nginx()
+    with Nginx() as nginx:
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "MISS"
 
-        response = send_request_to_nginx()
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "HIT"
 
-        time.sleep(VALID_TIMEOUT + DELTA)
+        time.sleep(config.VALID_TIMEOUT + DELTA)
 
-        response = send_request_to_nginx()
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "EXPIRED"
 
 
 def test_cache_similar_clean_timeout_rehit():
-    with create_nginx_container():
-        response = send_request_to_nginx()
+    with Nginx() as nginx:
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "MISS"
 
-        response = send_request_to_nginx()
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "HIT"
 
-        time.sleep(VALID_TIMEOUT + DELTA)
+        time.sleep(config.VALID_TIMEOUT + DELTA)
 
-        response = send_request_to_nginx()
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "EXPIRED"
 
-        response = send_request_to_nginx()
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "HIT"
 
 
 def test_cache_bypass():
-    with create_nginx_container(conf=BYPASS):
-        response = send_request_to_nginx(headers={"X-Bypass-Cache": "1"})
+    with Nginx(config=config.BYPASS) as nginx:
+        response = nginx.send(headers={"X-Bypass-Cache": "1"})
         assert response.headers["X-Cache-Status"] == "BYPASS"
 
-        response = send_request_to_nginx(headers={"X-Bypass-Cache": "1"})
+        response = nginx.send(headers={"X-Bypass-Cache": "1"})
         assert response.headers["X-Cache-Status"] == "BYPASS"
 
 
 def test_cache_bypass_off_header():
-    with create_nginx_container(conf=BYPASS):
-        response = send_request_to_nginx(headers={"X-Bypass-Cache": "0"})
+    with Nginx(config=config.BYPASS) as nginx:
+        response = nginx.send(headers={"X-Bypass-Cache": "0"})
         assert response.headers["X-Cache-Status"] == "MISS"
 
-        response = send_request_to_nginx(headers={"X-Bypass-Cache": "1"})
+        response = nginx.send(headers={"X-Bypass-Cache": "1"})
         assert response.headers["X-Cache-Status"] == "BYPASS"
 
-        response = send_request_to_nginx(headers={"X-Bypass-Cache": "0"})
+        response = nginx.send(headers={"X-Bypass-Cache": "0"})
         assert response.headers["X-Cache-Status"] == "HIT"
 
 
 def test_cache_bypass_no_header():
-    with create_nginx_container(conf=BYPASS):
-        response = send_request_to_nginx()
+    with Nginx(config=config.BYPASS) as nginx:
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "MISS"
 
-        response = send_request_to_nginx()
+        response = nginx.send()
         assert response.headers["X-Cache-Status"] == "HIT"
+
+
+def test_cache_error_response_4xx():
+    with Nginx() as nginx:
+        response = nginx.send(location='error_4xx')
+        assert response.status_code == 418
+        assert "X-Cache-Status" not in response.headers
+
+        response = nginx.send(location='error_4xx')
+        assert response.status_code == 418
+        assert "X-Cache-Status" not in response.headers
+
+
+def test_cache_error_response_5xx():
+    with Nginx() as nginx:
+        response = nginx.send(location='error_5xx')
+        assert response.status_code == 500
+        assert "X-Cache-Status" not in response.headers
+
+        response = nginx.send(location='error_5xx')
+        assert response.status_code == 500
+        assert "X-Cache-Status" not in response.headers
+
+
+def test_cache_reload():
+    with Nginx() as nginx:
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "MISS"
+
+        nginx.container.exec_run(f'bash -c "nginx -s reload"')
+        time.sleep(DELTA)
+
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "HIT"
+
+
+def test_cache_delete_cache():
+    with Nginx() as nginx:
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "MISS"
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "HIT"
+
+        nginx.container.exec_run(f'bash -c "find /var/cache/nginx -type f -delete"')
+        time.sleep(DELTA)
+
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "MISS"
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "HIT"
+
+
+def test_cache_inactive_timeout():
+    with Nginx(config=config.INACTIVE) as nginx:
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "MISS"
+
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "HIT"
+
+        time.sleep(config.VALID_TIMEOUT + 5)  # 5s as delta
+
+        response = nginx.send()
+        assert response.headers["X-Cache-Status"] == "MISS"
